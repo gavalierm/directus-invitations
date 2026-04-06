@@ -121,19 +121,82 @@ Watch mode:
 npx directus-extension build --watch
 ```
 
-## Collection Schema
+## Directus Setup
 
-The `invitations` collection must exist in Directus with:
+### 1. Create the `invitations` collection
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `id` | integer (PK, auto) | Yes | — |
-| `email` | string | Yes | Invited user email |
-| `band` | integer (FK → bands) | Yes | Target band |
-| `role_type` | string (dropdown) | Yes | `member`, `admin`, or `owner` |
-| `status` | string | Yes | `pending` (default) or `accepted` |
-| `user_created` | uuid (system) | No | Who created the invitation |
-| `date_created` | timestamp (system) | No | When (used for TTL) |
+In Directus Admin → Settings → Data Model → Create Collection:
+
+- **Collection name:** `invitations`
+- **Primary key:** Auto-increment integer
+
+### 2. Add fields
+
+| Field | Interface | Type | Options |
+|-------|-----------|------|---------|
+| `email` | Input | String | Required, not nullable |
+| `role_type` | Dropdown | String | Required, not nullable, default: `member`. Choices: `member`, `admin`, `owner` |
+| `status` | Dropdown | String | Required, not nullable, default: `pending`, readonly. Choices: `pending`, `accepted` |
+| `band` | Many-to-One | Integer | Required, not nullable. Related collection: `bands`. On delete: CASCADE |
+| `user_created` | User Created | UUID | System field, hidden |
+| `date_created` | Date Created | Timestamp | System field, hidden |
+
+### 3. Create relation
+
+- `invitations.band` → `bands.id` (Many-to-One)
+- Optionally set `bands.invitations` as the alias field (One-to-Many back-reference)
+
+### 4. Set permissions
+
+The extension runs with admin accountability, so it has full access. But users who **create invitations** need permissions on their policy:
+
+| Action | Collection | Filter | Fields |
+|--------|-----------|--------|--------|
+| **create** | `invitations` | `band.owners.user = $CURRENT_USER` | `email`, `band`, `role_type` |
+| **read** | `invitations` | `band.owners.user = $CURRENT_USER` | all |
+| **update** | `invitations` | `band.owners.user = $CURRENT_USER` | `status` |
+| **delete** | `invitations` | `band.owners.user = $CURRENT_USER` | — |
+
+Adjust the filter to match your authorization model. The example above restricts invitation management to band owners.
+
+**Validation on create** (optional): `role_type` must be one of `member`, `admin`, `owner`:
+```json
+{ "role_type": { "_in": ["member", "admin", "owner"] } }
+```
+
+### 5. Junction tables
+
+The extension creates records in these junction collections when a user accepts an invitation:
+
+- `members` (role_type: `member`) — fields: `user` (FK → directus_users), `band` (FK → bands)
+- `admins` (role_type: `admin`) — fields: `user` (FK → directus_users), `band` (FK → bands)
+- `owners` (role_type: `owner`) — fields: `user` (FK → directus_users), `band` (FK → bands)
+
+These collections must already exist in your Directus schema.
+
+### 6. Frontend page
+
+Create an `/accept-invite` page in your frontend app that:
+
+1. Reads `token` from URL query parameter
+2. Decodes email from JWT payload: `JSON.parse(atob(token.split('.')[1])).email`
+3. Shows a form: email (readonly), name (optional), password
+4. On submit:
+   - `POST /users/invite/accept` with `{ token, password }`
+   - `POST /auth/login` with `{ email, password }` (auto-login)
+   - `PATCH /users/me` with `{ first_name, last_name }` (if provided)
+
+## Collection Schema Reference
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `id` | integer (PK, auto) | Yes | — | — |
+| `email` | string | Yes | — | Invited user email |
+| `band` | integer (FK → bands) | Yes | — | Target band |
+| `role_type` | string (dropdown) | Yes | `member` | `member`, `admin`, or `owner` |
+| `status` | string (dropdown) | Yes | `pending` | `pending` or `accepted` |
+| `user_created` | uuid (system) | No | — | Who created the invitation |
+| `date_created` | timestamp (system) | No | — | When created (used for TTL calculation) |
 
 ## License
 
