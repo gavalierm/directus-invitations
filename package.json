@@ -1,0 +1,22 @@
+{
+  "name": "directus-hook-invitation-handler",
+  "version": "1.0.0",
+  "description": "Invitation system — invite, activate, cancel, expiry",
+  "type": "module",
+  "directus:extension": {
+    "type": "hook",
+    "path": "dist/index.js",
+    "source": "src/index.js",
+    "host": "^11.0.0"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.0"
+  },
+  "devDependencies": {
+    "@directus/extensions-sdk": "^12.0.0"
+  },
+  "scripts": {
+    "build": "npx directus-extension build",
+    "dev": "npx directus-extension build --watch"
+  }
+}
