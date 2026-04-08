@@ -39,7 +39,10 @@ export default ({ action, filter, schedule }, context) => {
     }
   });
 
-  action('directus_users.items.update', async (meta) => {
+  // System collection: directus emits `users.update`, NOT `directus_users.items.update`
+  // (see directus/api/src/services/items.ts — eventScope strips `directus_` prefix
+  // and system collections don't emit the `*.items.update` variant).
+  action('users.update', async (meta) => {
     try {
       await handleUserActivated(meta, { services, database, getSchema, logger, env });
     } catch (err) {
