@@ -112,10 +112,17 @@ export async function handleInviteCreate({ key, payload }, { services, database,
 
   } else {
     // ── New user ──
+    const roleId = await getBandMemberRole(env, database);
+    if (!roleId) {
+      logger.error(`[invitation-handler] No default role configured — set INVITATION_DEFAULT_ROLE env, or Public Registration Role in Directus Settings, or AUTH_DEFAULT_ROLE env. Deleting invitation ${key}.`);
+      await invitationsService.deleteOne(key);
+      return;
+    }
+
     const usersService = new services.ItemsService('directus_users', { schema, accountability: { admin: true } });
     const newUserId = await usersService.createOne({
       email,
-      role: getBandMemberRole(env),
+      role: roleId,
       status: 'invited',
     });
 

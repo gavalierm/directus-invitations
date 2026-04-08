@@ -3,11 +3,26 @@ export const COLLECTION_MAP = { member: 'members', admin: 'admins', owner: 'owne
 export const INVITE_TTL_DAYS = 7;
 
 export function getAppUrl(env) {
-  return env.INVITATION_APP_URL || env.PUBLIC_URL?.replace(/\/+$/, '');
+  const url = env.INVITATION_APP_URL || env.PUBLIC_URL;
+  return url?.replace(/\/+$/, '');
 }
 
-export function getBandMemberRole(env) {
-  return env.INVITATION_DEFAULT_ROLE || env.AUTH_DEFAULT_ROLE || null;
+export async function getBandMemberRole(env, database) {
+  // 1. Explicit override for this extension
+  if (env.INVITATION_DEFAULT_ROLE) return env.INVITATION_DEFAULT_ROLE;
+
+  // 2. Runtime-configurable Directus setting (Settings → Project Settings → Public Registration → Default Role)
+  try {
+    const rows = await database('directus_settings')
+      .select('public_registration_role')
+      .limit(1);
+    if (rows[0]?.public_registration_role) return rows[0].public_registration_role;
+  } catch {
+    // fall through to env fallback
+  }
+
+  // 3. Legacy SSO default
+  return env.AUTH_DEFAULT_ROLE || null;
 }
 
 export function roleSk(roleType) {
