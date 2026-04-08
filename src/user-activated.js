@@ -1,5 +1,5 @@
 import {
-  roleSk, junctionCollection, junctionExists, getOwnerEmails,
+  roleSk, insertJunctionChain, getOwnerEmails,
   getBandTitle, buildEmailHtml, getAppUrl
 } from './helpers.js';
 
@@ -29,7 +29,6 @@ export async function handleUserActivated({ keys, payload }, { services, databas
     const processedBands = [];
 
     for (const inv of invitations) {
-      const collection = junctionCollection(inv.role_type);
       const bandTitle = await getBandTitle(database, inv.band);
 
       if (!bandTitle) {
@@ -37,9 +36,9 @@ export async function handleUserActivated({ keys, payload }, { services, databas
         continue;
       }
 
-      if (collection && !(await junctionExists(database, collection, user.id, inv.band))) {
-        await database(collection).insert({ user: user.id, band: inv.band });
-        logger.info(`[invitation-handler] Activated: added ${user.email} to ${collection} for band ${inv.band}`);
+      const inserted = await insertJunctionChain(database, inv.role_type, user.id, inv.band);
+      if (inserted.length) {
+        logger.info(`[invitation-handler] Activated: added ${user.email} to [${inserted.join(', ')}] for band ${inv.band}`);
       }
 
       await invitationsService.updateOne(inv.id, { status: 'accepted' });

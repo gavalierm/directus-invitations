@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken';
 import {
-  roleSk, junctionCollection, getOwnerEmails, getInviterName, getBandTitle,
-  junctionExists, buildEmailHtml, getAppUrl, getBandMemberRole
+  roleSk, getOwnerEmails, getInviterName, getBandTitle,
+  insertJunctionChain, buildEmailHtml, getAppUrl, getBandMemberRole
 } from './helpers.js';
 
 export async function handleInviteCreate({ key, payload }, { services, database, getSchema, logger, env }) {
@@ -40,7 +40,6 @@ export async function handleInviteCreate({ key, payload }, { services, database,
   const inviterName = await getInviterName(database, inviterId);
   const ownerEmails = await getOwnerEmails(database, bandId);
   const role = roleSk(roleType);
-  const collection = junctionCollection(roleType);
 
   const users = await database('directus_users')
     .where('email', email)
@@ -51,9 +50,9 @@ export async function handleInviteCreate({ key, payload }, { services, database,
 
   if (user && user.status === 'active') {
     // ── Active user ──
-    if (collection && !(await junctionExists(database, collection, user.id, bandId))) {
-      await database(collection).insert({ user: user.id, band: bandId });
-      logger.info(`[invitation-handler] Added ${email} to ${collection} for band ${bandId}`);
+    const inserted = await insertJunctionChain(database, roleType, user.id, bandId);
+    if (inserted.length) {
+      logger.info(`[invitation-handler] Added ${email} to [${inserted.join(', ')}] for band ${bandId}`);
     }
 
     await invitationsService.updateOne(key, { status: 'accepted' });

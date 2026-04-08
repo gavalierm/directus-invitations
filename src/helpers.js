@@ -1,5 +1,9 @@
 export const ROLE_MAP = { member: 'člen', admin: 'správca', owner: 'vlastník' };
 export const COLLECTION_MAP = { member: 'members', admin: 'admins', owner: 'owners' };
+// Owners are implicitly admins too — an owner invitation must produce both
+// `owners` and `admins` junction records (deduplicated). Members and admins
+// produce only their own junction.
+export const JUNCTION_CHAIN = { member: ['members'], admin: ['admins'], owner: ['owners', 'admins'] };
 export const INVITE_TTL_DAYS = 7;
 
 export function getAppUrl(env) {
@@ -31,6 +35,24 @@ export function roleSk(roleType) {
 
 export function junctionCollection(roleType) {
   return COLLECTION_MAP[roleType] || null;
+}
+
+export function junctionChain(roleType) {
+  return JUNCTION_CHAIN[roleType] || [];
+}
+
+// Insert role_type into every junction collection in the chain, skipping
+// collections where the (user, band) pair already exists. Returns the list
+// of collections that actually got a new insert (for logging).
+export async function insertJunctionChain(database, roleType, userId, bandId) {
+  const inserted = [];
+  for (const collection of junctionChain(roleType)) {
+    if (!(await junctionExists(database, collection, userId, bandId))) {
+      await database(collection).insert({ user: userId, band: bandId });
+      inserted.push(collection);
+    }
+  }
+  return inserted;
 }
 
 export async function getOwnerEmails(database, bandId) {
