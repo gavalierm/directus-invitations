@@ -48,10 +48,10 @@ export async function handleInviteCreate({ key, payload }, { services, database,
     const newUserId = await usersService.createOne({ email, role: roleId, status: 'invited' });
     logger.info(`[invitations] Created invited user ${newUserId} for ${email}`);
     user = { status: 'invited' };
-  } else if (user.status === 'suspended') {
-    // Suspended user — reactivate as invited (new invitation = fresh start)
+  } else if (user.status !== 'invited' && user.status !== 'active') {
+    // Any other status (suspended, archived, ...) — reset to invited
     await usersService.updateOne(user.id, { status: 'invited' });
-    logger.info(`[invitations] Reactivated suspended user ${email} as invited`);
+    logger.info(`[invitations] Reset user ${email} from ${user.status} to invited`);
     user.status = 'invited';
   }
 
