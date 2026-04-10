@@ -34,24 +34,29 @@ export async function handleInviteCreate({ key, payload }, { services, database,
   const token = createInviteToken(env, email, key);
   const inviteUrl = `${getAppUrl(env)}/accept-invite?token=${encodeURIComponent(token)}`;
 
-  const user = await getUserByEmail(database, email);
+  let user = await getUserByEmail(database, email);
+  const usersService = new services.ItemsService('directus_users', { schema, accountability: { admin: true } });
 
-  // Create Directus user if not exists
   if (!user) {
+    // New user — create with invited status
     const roleId = await getDefaultRole(env, database);
     if (!roleId) {
       logger.error(`[invitations] No default role configured. Deleting invitation ${key}.`);
       await invitationsService.deleteOne(key);
       return;
     }
-    const usersService = new services.ItemsService('directus_users', { schema, accountability: { admin: true } });
     const newUserId = await usersService.createOne({ email, role: roleId, status: 'invited' });
     logger.info(`[invitations] Created invited user ${newUserId} for ${email}`);
+    user = { status: 'invited' };
+  } else if (user.status === 'suspended') {
+    // Suspended user — reactivate as invited (new invitation = fresh start)
+    await usersService.updateOne(user.id, { status: 'invited' });
+    logger.info(`[invitations] Reactivated suspended user ${email} as invited`);
+    user.status = 'invited';
   }
 
-  // Send invite/accept email (same template for all states)
-  const isActive = user?.status === 'active';
-  const userName = user ? [user.first_name, user.last_name].filter(Boolean).join(' ') : '';
+  const isActive = user.status === 'active';
+  const userName = [user.first_name, user.last_name].filter(Boolean).join(' ');
 
   await mailService.send({
     to: email,
