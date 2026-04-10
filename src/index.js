@@ -1,29 +1,55 @@
 import { handleInviteCreate } from './invite-create.js';
+import { filterInviteUpdate, handleInviteAccepted } from './invite-accept.js';
 import { preDeleteCapture, postDeleteProcess } from './invite-delete.js';
-import { handleUserActivated } from './user-activated.js';
 import { handleExpiryCleanup } from './expiry-cleanup.js';
 
 export default ({ action, filter, schedule }, context) => {
   const { services, database, getSchema, logger, env } = context;
 
-  let _pendingDeletes = new Map();
+  const ctx = { services, database, getSchema, logger, env };
+
+  // Pending deletes buffer — filter captures data, action processes it
+  const _pendingDeletes = new Map();
+
+  // ── CREATE ──
 
   action('invitations.items.create', async (meta) => {
     try {
-      await handleInviteCreate(meta, { services, database, getSchema, logger, env });
+      await handleInviteCreate(meta, ctx);
     } catch (err) {
-      logger.error(`[invitation-handler] create error: ${err.message}`);
+      logger.error(`[invitations] create error: ${err.message}`);
     }
   });
 
+  // ── UPDATE (accept) ──
+
+  filter('invitations.items.update', (payload, meta) => {
+    try {
+      return filterInviteUpdate(payload, meta, ctx);
+    } catch (err) {
+      // Re-throw to block the update
+      throw err;
+    }
+  });
+
+  action('invitations.items.update', async (meta) => {
+    try {
+      await handleInviteAccepted(meta, ctx);
+    } catch (err) {
+      logger.error(`[invitations] accept error: ${err.message}`);
+    }
+  });
+
+  // ── DELETE ──
+
   filter('invitations.items.delete', async (keys) => {
     try {
-      const captured = await preDeleteCapture(keys, { database, logger });
+      const captured = await preDeleteCapture(keys, ctx);
       const batchId = Date.now().toString();
       _pendingDeletes.set(batchId, captured);
       keys._invBatchId = batchId;
     } catch (err) {
-      logger.error(`[invitation-handler] pre-delete error: ${err.message}`);
+      logger.error(`[invitations] pre-delete error: ${err.message}`);
     }
     return keys;
   });
@@ -33,28 +59,19 @@ export default ({ action, filter, schedule }, context) => {
       const batchId = meta.keys?._invBatchId || [..._pendingDeletes.keys()].pop();
       const captured = _pendingDeletes.get(batchId) || [];
       _pendingDeletes.delete(batchId);
-      await postDeleteProcess(captured, { services, database, getSchema, logger });
+      await postDeleteProcess(captured, ctx);
     } catch (err) {
-      logger.error(`[invitation-handler] delete error: ${err.message}`);
+      logger.error(`[invitations] delete error: ${err.message}`);
     }
   });
 
-  // System collection: directus emits `users.update`, NOT `directus_users.items.update`
-  // (see directus/api/src/services/items.ts — eventScope strips `directus_` prefix
-  // and system collections don't emit the `*.items.update` variant).
-  action('users.update', async (meta) => {
-    try {
-      await handleUserActivated(meta, { services, database, getSchema, logger, env });
-    } catch (err) {
-      logger.error(`[invitation-handler] user-activated error: ${err.message}`);
-    }
-  });
+  // ── CRON: expiry cleanup (daily at 2:00 AM) ──
 
   schedule('0 2 * * *', async () => {
     try {
-      await handleExpiryCleanup({ services, database, getSchema, logger, env });
+      await handleExpiryCleanup(ctx);
     } catch (err) {
-      logger.error(`[invitation-handler] expiry-cleanup error: ${err.message}`);
+      logger.error(`[invitations] expiry-cleanup error: ${err.message}`);
     }
   });
 };

@@ -1,7 +1,7 @@
-import jwt from 'jsonwebtoken';
 import {
-  roleSk, getOwnerEmails, getInviterName, getBandTitle,
-  insertJunctionChain, buildEmailHtml, getAppUrl, getBandMemberRole
+  roleSk, getAppUrl, getDefaultRole, createInviteToken,
+  getBandTitle, getInviterName, getUserByEmail, getOwnerEmails,
+  isDuplicate, buildEmailHtml,
 } from './helpers.js';
 
 export async function handleInviteCreate({ key, payload }, { services, database, getSchema, logger, env }) {
@@ -10,29 +10,23 @@ export async function handleInviteCreate({ key, payload }, { services, database,
   const mailService = new services.MailService({ schema });
 
   const invitation = await invitationsService.readOne(key, {
-    fields: ['id', 'email', 'band', 'role_type', 'user_created']
+    fields: ['id', 'email', 'band', 'role_type', 'user_created'],
   });
-
   if (!invitation) return;
 
   const { email, band: bandId, role_type: roleType, user_created: inviterId } = invitation;
 
+  // Validate band exists
   const bandTitle = await getBandTitle(database, bandId);
   if (!bandTitle) {
-    logger.warn(`[invitation-handler] Band ${bandId} not found, deleting invitation ${key}`);
+    logger.warn(`[invitations] Band ${bandId} not found, deleting invitation ${key}`);
     await invitationsService.deleteOne(key);
     return;
   }
 
-  // Deduplicate: same email+band+role already exists
-  const duplicates = await database('invitations')
-    .where({ email, band: bandId, role_type: roleType })
-    .whereNot('id', key)
-    .select('id')
-    .limit(1);
-
-  if (duplicates.length) {
-    logger.info(`[invitation-handler] Duplicate invitation for ${email}, deleting ${key}`);
+  // Deduplicate
+  if (await isDuplicate(database, email, bandId, roleType, key)) {
+    logger.info(`[invitations] Duplicate invitation for ${email} band=${bandId} role=${roleType}, deleting ${key}`);
     await invitationsService.deleteOne(key);
     return;
   }
@@ -40,100 +34,23 @@ export async function handleInviteCreate({ key, payload }, { services, database,
   const inviterName = await getInviterName(database, inviterId);
   const ownerEmails = await getOwnerEmails(database, bandId);
   const role = roleSk(roleType);
+  const token = createInviteToken(env, email, key);
+  const inviteUrl = `${getAppUrl(env)}/accept-invite?token=${encodeURIComponent(token)}`;
 
-  const users = await database('directus_users')
-    .where('email', email)
-    .select('id', 'status', 'first_name', 'last_name')
-    .limit(1);
+  const user = await getUserByEmail(database, email);
 
-  const user = users[0];
-
-  if (user && user.status === 'active') {
-    // ── Active user ──
-    const inserted = await insertJunctionChain(database, roleType, user.id, bandId);
-    if (inserted.length) {
-      logger.info(`[invitation-handler] Added ${email} to [${inserted.join(', ')}] for band ${bandId}`);
-    }
-
-    await invitationsService.updateOne(key, { status: 'accepted' });
-
-    const userName = [user.first_name, user.last_name].filter(Boolean).join(' ') || email;
-
-    await mailService.send({
-      to: email,
-      subject: `Boli ste priradení do kapely ${bandTitle}`,
-      html: buildEmailHtml({
-        heading: `Ahoj ${userName},`,
-        items: [
-          `<strong>Kapela:</strong> ${bandTitle}`,
-          `<strong>Rola:</strong> ${role}`,
-          `<strong>Pridal/a:</strong> ${inviterName}`,
-        ],
-        ctaText: 'Otvoriť Spevník',
-        ctaUrl: getAppUrl(env),
-      }),
-    }).catch(err => logger.error(`[invitation-handler] Mail to ${email} failed: ${err.message}`));
-
-    if (ownerEmails.length) {
-      await mailService.send({
-        to: ownerEmails,
-        subject: `Nový ${role} v kapele ${bandTitle}`,
-        html: buildEmailHtml({
-          heading: `Do vašej kapely bol pridaný nový ${role}.`,
-          items: [
-            `<strong>Používateľ:</strong> ${userName} (${email})`,
-            `<strong>Kapela:</strong> ${bandTitle}`,
-            `<strong>Rola:</strong> ${role}`,
-            `<strong>Pridal/a:</strong> ${inviterName}`,
-          ],
-        }),
-      }).catch(err => logger.error(`[invitation-handler] Mail to owners failed: ${err.message}`));
-    }
-
-  } else if (user && user.status === 'invited') {
-    // ── Already invited ──
-    if (ownerEmails.length) {
-      await mailService.send({
-        to: ownerEmails,
-        subject: `Nová pozvánka do kapely ${bandTitle}`,
-        html: buildEmailHtml({
-          heading: 'Bola vytvorená nová pozvánka do vašej kapely.',
-          items: [
-            `<strong>E-mail:</strong> ${email}`,
-            `<strong>Kapela:</strong> ${bandTitle}`,
-            `<strong>Rola:</strong> ${role}`,
-            `<strong>Pozval/a:</strong> ${inviterName}`,
-            `<strong>Stav:</strong> Čaká na akceptáciu`,
-          ],
-        }),
-      }).catch(err => logger.error(`[invitation-handler] Mail to owners failed: ${err.message}`));
-    }
-
-  } else {
-    // ── New user ──
-    const roleId = await getBandMemberRole(env, database);
+  if (!user) {
+    // ── New user: create with invited status ──
+    const roleId = await getDefaultRole(env, database);
     if (!roleId) {
-      logger.error(`[invitation-handler] No default role configured — set INVITATION_DEFAULT_ROLE env, or Public Registration Role in Directus Settings, or AUTH_DEFAULT_ROLE env. Deleting invitation ${key}.`);
+      logger.error(`[invitations] No default role configured. Deleting invitation ${key}.`);
       await invitationsService.deleteOne(key);
       return;
     }
 
     const usersService = new services.ItemsService('directus_users', { schema, accountability: { admin: true } });
-    const newUserId = await usersService.createOne({
-      email,
-      role: roleId,
-      status: 'invited',
-    });
-
-    logger.info(`[invitation-handler] Created invited user ${newUserId} for ${email}`);
-
-    const token = jwt.sign(
-      { email, scope: 'invite' },
-      env.SECRET,
-      { expiresIn: env.USER_INVITE_TOKEN_TTL || '7d', issuer: 'directus' }
-    );
-
-    const inviteUrl = `${getAppUrl(env)}/accept-invite?token=${encodeURIComponent(token)}`;
+    const newUserId = await usersService.createOne({ email, role: roleId, status: 'invited' });
+    logger.info(`[invitations] Created invited user ${newUserId} for ${email}`);
 
     await mailService.send({
       to: email,
@@ -148,24 +65,65 @@ export async function handleInviteCreate({ key, payload }, { services, database,
         ctaText: 'Aktivovať účet',
         ctaUrl: inviteUrl,
         footer: 'Pre aktiváciu kliknite na tlačidlo a nastavte si heslo.',
+        ttlNote: true,
       }),
-    }).catch(err => logger.error(`[invitation-handler] Invite mail to ${email} failed: ${err.message}`));
+    }).catch(err => logger.error(`[invitations] Invite mail to ${email} failed: ${err.message}`));
 
-    if (ownerEmails.length) {
-      await mailService.send({
-        to: ownerEmails,
-        subject: `Nová pozvánka do kapely ${bandTitle}`,
-        html: buildEmailHtml({
-          heading: 'Bola vytvorená nová pozvánka do vašej kapely.',
-          items: [
-            `<strong>E-mail:</strong> ${email}`,
-            `<strong>Kapela:</strong> ${bandTitle}`,
-            `<strong>Rola:</strong> ${role}`,
-            `<strong>Pozval/a:</strong> ${inviterName}`,
-            `<strong>Stav:</strong> Čaká na akceptáciu`,
-          ],
-        }),
-      }).catch(err => logger.error(`[invitation-handler] Mail to owners failed: ${err.message}`));
-    }
+  } else if (user.status === 'invited') {
+    // ── Existing invited user: send invite email with new token ──
+    await mailService.send({
+      to: email,
+      subject: `Pozvánka do kapely ${bandTitle} — Spevník`,
+      html: buildEmailHtml({
+        heading: 'Ahoj,',
+        items: [
+          `<strong>Kapela:</strong> ${bandTitle}`,
+          `<strong>Rola:</strong> ${role}`,
+          `<strong>Pozval/a:</strong> ${inviterName}`,
+        ],
+        ctaText: 'Aktivovať účet',
+        ctaUrl: inviteUrl,
+        footer: 'Pre aktiváciu kliknite na tlačidlo a nastavte si heslo.',
+        ttlNote: true,
+      }),
+    }).catch(err => logger.error(`[invitations] Invite mail to ${email} failed: ${err.message}`));
+
+  } else {
+    // ── Active user: send accept email ──
+    const userName = [user.first_name, user.last_name].filter(Boolean).join(' ') || email;
+
+    await mailService.send({
+      to: email,
+      subject: `Pozvánka do kapely ${bandTitle} — Spevník`,
+      html: buildEmailHtml({
+        heading: `Ahoj ${userName},`,
+        items: [
+          `<strong>Kapela:</strong> ${bandTitle}`,
+          `<strong>Rola:</strong> ${role}`,
+          `<strong>Pozval/a:</strong> ${inviterName}`,
+        ],
+        ctaText: 'Akceptovať pozvánku',
+        ctaUrl: inviteUrl,
+        ttlNote: true,
+      }),
+    }).catch(err => logger.error(`[invitations] Accept mail to ${email} failed: ${err.message}`));
+  }
+
+  // Notify band owners
+  if (ownerEmails.length) {
+    await mailService.send({
+      to: ownerEmails,
+      subject: `Nová pozvánka do kapely ${bandTitle}`,
+      html: buildEmailHtml({
+        heading: 'Bola vytvorená nová pozvánka do vašej kapely.',
+        items: [
+          `<strong>E-mail:</strong> ${email}`,
+          `<strong>Kapela:</strong> ${bandTitle}`,
+          `<strong>Rola:</strong> ${role}`,
+          `<strong>Pozval/a:</strong> ${inviterName}`,
+        ],
+        ttlNote: true,
+      }),
+    }).catch(err => logger.error(`[invitations] Owner notification failed: ${err.message}`));
   }
 }

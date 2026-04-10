@@ -1,98 +1,142 @@
-export const ROLE_MAP = { member: 'člen', admin: 'správca', owner: 'vlastník' };
-export const COLLECTION_MAP = { member: 'members', admin: 'admins', owner: 'owners' };
-// Owners are implicitly admins too — an owner invitation must produce both
-// `owners` and `admins` junction records (deduplicated). Members and admins
-// produce only their own junction.
-export const JUNCTION_CHAIN = { member: ['members'], admin: ['admins'], owner: ['owners', 'admins'] };
+import jwt from 'jsonwebtoken';
+
+// ── Role mapping ──
+
+const ROLE_SK = { member: 'člen', manager: 'správca', owner: 'vlastník' };
+const ACCESS_FIELD = { member: 'member', manager: 'manager', owner: 'owner' };
+const ACCESS_VALUE = { member: 'public', manager: 'unlisted', owner: 'unlisted' };
+
 export const INVITE_TTL_DAYS = 7;
+
+export function roleSk(roleType) {
+  return ROLE_SK[roleType] || roleType;
+}
+
+// ── App URL ──
 
 export function getAppUrl(env) {
   const url = env.INVITATION_APP_URL || env.PUBLIC_URL;
   return url?.replace(/\/+$/, '');
 }
 
-export async function getBandMemberRole(env, database) {
-  // 1. Explicit override for this extension
+// ── Default Directus role for new users ──
+
+export async function getDefaultRole(env, database) {
   if (env.INVITATION_DEFAULT_ROLE) return env.INVITATION_DEFAULT_ROLE;
-
-  // 2. Runtime-configurable Directus setting (Settings → Project Settings → Public Registration → Default Role)
   try {
-    const rows = await database('directus_settings')
-      .select('public_registration_role')
-      .limit(1);
-    if (rows[0]?.public_registration_role) return rows[0].public_registration_role;
-  } catch {
-    // fall through to env fallback
-  }
-
-  // 3. Legacy SSO default
+    const [row] = await database('directus_settings').select('public_registration_role').limit(1);
+    if (row?.public_registration_role) return row.public_registration_role;
+  } catch { /* fall through */ }
   return env.AUTH_DEFAULT_ROLE || null;
 }
 
-export function roleSk(roleType) {
-  return ROLE_MAP[roleType] || roleType;
+// ── JWT ──
+
+export function createInviteToken(env, email, invitationId) {
+  return jwt.sign(
+    { email, invitation_id: invitationId, scope: 'invite' },
+    env.SECRET,
+    { expiresIn: env.USER_INVITE_TOKEN_TTL || '7d', issuer: 'directus' },
+  );
 }
 
-export function junctionCollection(roleType) {
-  return COLLECTION_MAP[roleType] || null;
+export function verifyInviteToken(env, token) {
+  const payload = jwt.verify(token, env.SECRET, { issuer: 'directus' });
+  if (payload.scope !== 'invite') throw new Error('Invalid token scope');
+  if (!payload.invitation_id) throw new Error('Missing invitation_id in token');
+  return payload;
 }
 
-export function junctionChain(roleType) {
-  return JUNCTION_CHAIN[roleType] || [];
-}
+// ── DB queries ──
 
-// Insert role_type into every junction collection in the chain, skipping
-// collections where the (user, band) pair already exists. Returns the list
-// of collections that actually got a new insert (for logging).
-export async function insertJunctionChain(database, roleType, userId, bandId) {
-  const inserted = [];
-  for (const collection of junctionChain(roleType)) {
-    if (!(await junctionExists(database, collection, userId, bandId))) {
-      await database(collection).insert({ user: userId, band: bandId });
-      inserted.push(collection);
-    }
-  }
-  return inserted;
-}
-
-export async function getOwnerEmails(database, bandId) {
-  const owners = await database('owners')
-    .join('directus_users', 'owners.user', 'directus_users.id')
-    .where('owners.band', bandId)
-    .whereNotNull('directus_users.email')
-    .select('directus_users.email');
-  return owners.map(o => o.email);
+export async function getBandTitle(database, bandId) {
+  const [row] = await database('bands').where('id', bandId).select('title').limit(1);
+  return row?.title || null;
 }
 
 export async function getInviterName(database, userId) {
   if (!userId) return 'Spevník';
-  const rows = await database('directus_users')
-    .where('id', userId)
-    .select('first_name', 'last_name')
+  const [row] = await database('directus_users').where('id', userId).select('first_name', 'last_name').limit(1);
+  if (!row) return 'Spevník';
+  return [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Spevník';
+}
+
+export async function getUserByEmail(database, email) {
+  const [row] = await database('directus_users')
+    .where('email', email)
+    .select('id', 'status', 'first_name', 'last_name')
     .limit(1);
-  if (!rows.length) return 'Spevník';
-  return [rows[0].first_name, rows[0].last_name].filter(Boolean).join(' ') || 'Spevník';
+  return row || null;
 }
 
-export async function getBandTitle(database, bandId) {
-  const rows = await database('bands').where('id', bandId).select('title').limit(1);
-  return rows.length ? rows[0].title : null;
+export async function getOwnerEmails(database, bandId) {
+  const rows = await database('access')
+    .join('directus_users', 'access.user', 'directus_users.id')
+    .where('access.band', bandId)
+    .whereNotNull('access.owner')
+    .whereNotNull('directus_users.email')
+    .select('directus_users.email');
+  return rows.map(r => r.email);
 }
 
-export async function junctionExists(database, collection, userId, bandId) {
-  const rows = await database(collection)
+export async function getUserName(database, userId) {
+  if (!userId) return null;
+  const [row] = await database('directus_users').where('id', userId).select('first_name', 'last_name', 'email').limit(1);
+  if (!row) return null;
+  return [row.first_name, row.last_name].filter(Boolean).join(' ') || row.email;
+}
+
+// ── Access upsert ──
+
+export async function upsertAccess(database, roleType, userId, bandId) {
+  const field = ACCESS_FIELD[roleType];
+  const value = ACCESS_VALUE[roleType];
+  if (!field || !value) throw new Error(`Unknown role_type: ${roleType}`);
+
+  const [existing] = await database('access')
     .where({ user: userId, band: bandId })
+    .select('id', field)
+    .limit(1);
+
+  if (existing) {
+    if (existing[field] === value) return false; // already set
+    await database('access').where('id', existing.id).update({ [field]: value });
+    return true;
+  }
+
+  await database('access').insert({
+    user: userId,
+    band: bandId,
+    [field]: value,
+  });
+  return true;
+}
+
+// ── Deduplication ──
+
+export async function isDuplicate(database, email, bandId, roleType, excludeId) {
+  const [row] = await database('invitations')
+    .where({ email, band: bandId, role_type: roleType })
+    .whereNot('id', excludeId)
     .select('id')
     .limit(1);
-  return rows.length > 0;
+  return !!row;
 }
 
-export function buildEmailHtml({ heading, items, ctaText, ctaUrl, footer }) {
+// ── Email HTML ──
+
+export function buildEmailHtml({ heading, items, ctaText, ctaUrl, footer, ttlNote = false }) {
   const listHtml = items.map(i => `<li>${i}</li>`).join('');
   const ctaHtml = ctaUrl
     ? `<p style="margin:20px 0"><a href="${ctaUrl}" style="display:inline-block;background:#2563eb;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:bold">${ctaText}</a></p>`
     : '';
-  const footerHtml = footer ? `<p style="color:#666;font-size:12px;margin-top:20px">${footer}</p>` : '';
+  const ttlHtml = ttlNote
+    ? `<p style="color:#888;font-size:13px;margin-top:16px">Platnosť pozvánky: ${INVITE_TTL_DAYS} dní od odoslania.</p>`
+    : '';
+  const footerHtml = footer
+    ? `<p style="color:#666;font-size:12px;margin-top:20px">${footer}</p>`
+    : '';
+
   return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;margin:0 auto;padding:24px">`
-    + `<p>${heading}</p><ul>${listHtml}</ul>${ctaHtml}${footerHtml}</div>`;
+    + `<p>${heading}</p><ul>${listHtml}</ul>${ctaHtml}${ttlHtml}${footerHtml}</div>`;
 }
