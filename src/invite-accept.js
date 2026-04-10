@@ -5,16 +5,20 @@ import {
 
 /**
  * Filter hook: runs BEFORE the update is written to DB.
- * - Validates that the only allowed PATCH is { status: "accepted", token: "jwt" }
+ * Invitation is immutable after creation. Only allowed PATCH:
+ *   { status: "accepted", token: "jwt" }
+ *   { status: "accepted", token: "jwt", password: "xxx" }  (for invited users)
+ *
  * - Verifies JWT (signature, expiry, scope, invitation_id match)
- * - Strips `token` from payload (not a DB field)
+ * - If user is "invited" and password provided: activates user via UsersService
+ * - Strips token + password from payload (not DB fields)
+ * - Attaches _verified data for the action hook
  */
-export function filterInviteUpdate(payload, meta, { env, database, logger }) {
+export async function filterInviteUpdate(payload, meta, { env, database, services, getSchema, logger }) {
   const keys = meta.keys || [];
   if (!keys.length) return payload;
 
-  // Only allow { status: "accepted", token: "..." }
-  const allowedKeys = new Set(['status', 'token']);
+  const allowedKeys = new Set(['status', 'token', 'password']);
   const payloadKeys = Object.keys(payload);
 
   if (payloadKeys.some(k => !allowedKeys.has(k))) {
@@ -38,19 +42,56 @@ export function filterInviteUpdate(payload, meta, { env, database, logger }) {
   }
 
   // Verify invitation_id matches
-  // Directus passes keys as strings; invitation_id in token is a number
   const targetId = String(tokenPayload.invitation_id);
   if (keys.length !== 1 || String(keys[0]) !== targetId) {
     throw new Error('Token nesúhlasí s pozvánkou.');
   }
 
-  // Strip token from payload — not a DB field
-  delete payload.token;
+  // Check invitation is still pending
+  const [invitation] = await database('invitations')
+    .where('id', tokenPayload.invitation_id)
+    .select('status')
+    .limit(1);
 
-  // Attach verified data for the action hook
+  if (!invitation) {
+    throw new Error('Pozvánka neexistuje.');
+  }
+
+  if (invitation.status === 'accepted') {
+    throw new Error('Pozvánka už bola akceptovaná.');
+  }
+
+  // Find user by email
+  const [user] = await database('directus_users')
+    .where('email', tokenPayload.email)
+    .select('id', 'status')
+    .limit(1);
+
+  if (!user) {
+    throw new Error('Používateľ neexistuje.');
+  }
+
+  // If user is "invited" — activate with password
+  if (user.status === 'invited') {
+    if (!payload.password) {
+      throw new Error('Heslo je povinné pre aktiváciu účtu.');
+    }
+
+    const schema = await getSchema();
+    const usersService = new services.UsersService({ schema, accountability: { admin: true } });
+    await usersService.updateOne(user.id, { status: 'active', password: payload.password });
+    logger.info(`[invitations] Activated user ${tokenPayload.email}`);
+  }
+
+  // Strip non-DB fields
+  delete payload.token;
+  delete payload.password;
+
+  // Attach verified data for action hook
   payload._verified = {
     email: tokenPayload.email,
     invitationId: tokenPayload.invitation_id,
+    userId: user.id,
   };
 
   return payload;
@@ -64,46 +105,32 @@ export async function handleInviteAccepted({ keys, payload }, { services, databa
   if (payload?.status !== 'accepted') return;
 
   const verified = payload._verified;
-  if (!verified) return; // not from the accept flow
+  if (!verified) return;
 
   const schema = await getSchema();
   const mailService = new services.MailService({ schema });
 
-  const invitationId = verified.invitationId;
-
   const [invitation] = await database('invitations')
-    .where('id', invitationId)
+    .where('id', verified.invitationId)
     .select('id', 'email', 'band', 'role_type')
     .limit(1);
 
   if (!invitation) {
-    logger.warn(`[invitations] Accepted invitation ${invitationId} not found`);
+    logger.warn(`[invitations] Accepted invitation ${verified.invitationId} not found`);
     return;
   }
 
   const { email, band: bandId, role_type: roleType } = invitation;
 
-  // Find user
-  const [user] = await database('directus_users')
-    .where('email', email)
-    .select('id', 'first_name', 'last_name')
-    .limit(1);
-
-  if (!user) {
-    logger.error(`[invitations] User ${email} not found for accepted invitation ${invitationId}`);
-    return;
-  }
-
   // Upsert access
-  const changed = await upsertAccess(database, roleType, user.id, bandId);
+  const changed = await upsertAccess(database, roleType, verified.userId, bandId);
   if (changed) {
     logger.info(`[invitations] Access upserted: ${email} → ${roleType} in band ${bandId}`);
   }
 
-  // Send confirmation emails
   const bandTitle = await getBandTitle(database, bandId);
   const role = roleSk(roleType);
-  const userName = [user.first_name, user.last_name].filter(Boolean).join(' ') || email;
+  const userName = await getUserName(database, verified.userId, email);
 
   // Email to accepted user
   await mailService.send({

@@ -23,13 +23,8 @@ export default ({ action, filter, schedule }, context) => {
 
   // ── UPDATE (accept) ──
 
-  filter('invitations.items.update', (payload, meta) => {
-    try {
-      return filterInviteUpdate(payload, meta, ctx);
-    } catch (err) {
-      // Re-throw to block the update
-      throw err;
-    }
+  filter('invitations.items.update', async (payload, meta) => {
+    return filterInviteUpdate(payload, meta, ctx);
   });
 
   action('invitations.items.update', async (meta) => {
