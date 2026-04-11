@@ -163,8 +163,13 @@ export async function sendBatchNotification(pendingInvitations, mailService, dat
 
 // ── Orphan cleanup (shared by delete + expiry) ──
 
-export async function cleanupOrphanedUsers(database, emails, logger) {
-  for (const email of [...new Set(emails)]) {
+export async function cleanupOrphanedUsers(database, emails, logger, services, getSchema) {
+  const uniqueEmails = [...new Set(emails)].filter(Boolean);
+  if (!uniqueEmails.length) return;
+
+  let usersService = null;
+
+  for (const email of uniqueEmails) {
     const [remaining] = await database('invitations').where('email', email).select('id').limit(1);
     if (remaining) continue;
 
@@ -173,9 +178,19 @@ export async function cleanupOrphanedUsers(database, emails, logger) {
       .select('id')
       .limit(1);
 
-    if (orphan) {
-      await database('directus_users').where('id', orphan.id).delete();
+    if (!orphan) continue;
+
+    try {
+      if (!usersService) {
+        const schema = await getSchema();
+        usersService = new services.UsersService({ schema, accountability: { admin: true } });
+      }
+      await usersService.deleteOne(orphan.id);
       logger.info(`[invitations] Deleted orphan invited user ${email}`);
+    } catch (err) {
+      // User may still own files, folders, or other FK references.
+      // Orphan cleanup is best-effort — log and continue with the rest.
+      logger.warn(`[invitations] Skipped orphan cleanup for ${email}: ${err.message}`);
     }
   }
 }

@@ -32,5 +32,5 @@ export async function handleExpiryCleanup({ services, database, getSchema, logge
   await database('invitations').whereIn('id', expiredIds).delete();
   logger.info(`[invitations] Deleted ${expiredIds.length} expired invitations (${pending.length} pending, ${expiredIds.length - pending.length} accepted)`);
 
-  await cleanupOrphanedUsers(database, expired.map(i => i.email), logger);
+  await cleanupOrphanedUsers(database, expired.map(i => i.email), logger, services, getSchema);
 }

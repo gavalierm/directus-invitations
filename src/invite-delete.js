@@ -32,5 +32,5 @@ export async function postDeleteProcess(deletedInvitations, { services, database
     });
   }
 
-  await cleanupOrphanedUsers(database, deletedInvitations.map(i => i.email), logger);
+  await cleanupOrphanedUsers(database, deletedInvitations.map(i => i.email), logger, services, getSchema);
 }
