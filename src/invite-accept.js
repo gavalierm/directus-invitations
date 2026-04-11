@@ -14,7 +14,9 @@ import {
  * - Strips token + password from payload (not DB fields)
  * - Attaches _verified data for the action hook
  */
-export async function filterInviteUpdate(payload, meta, { env, database, services, getSchema, logger }) {
+const PENDING_ACCEPT_TTL_MS = 60_000;
+
+export async function filterInviteUpdate(payload, meta, { env, database, services, getSchema, logger }, pendingAccepts) {
   const keys = meta.keys || [];
   if (!keys.length) return payload;
 
@@ -83,16 +85,20 @@ export async function filterInviteUpdate(payload, meta, { env, database, service
     logger.info(`[invitations] Activated user ${tokenPayload.email}`);
   }
 
-  // Strip non-DB fields
+  // Strip non-DB fields so Directus payload validation accepts the PATCH
   delete payload.token;
   delete payload.password;
 
-  // Attach verified data for action hook
-  payload._verified = {
+  // Hand off verified data to the action hook via a module-scope Map
+  // (writing to payload._verified fails for non-admin roles: Directus rejects
+  // unknown fields with FORBIDDEN before the DB write happens).
+  const invitationKey = String(keys[0]);
+  pendingAccepts.set(invitationKey, {
     email: tokenPayload.email,
     invitationId: tokenPayload.invitation_id,
     userId: user.id,
-  };
+  });
+  setTimeout(() => pendingAccepts.delete(invitationKey), PENDING_ACCEPT_TTL_MS).unref?.();
 
   return payload;
 }
@@ -101,10 +107,14 @@ export async function filterInviteUpdate(payload, meta, { env, database, service
  * Action hook: runs AFTER the update is written to DB.
  * Creates/updates access record and sends confirmation emails.
  */
-export async function handleInviteAccepted({ keys, payload }, { services, database, getSchema, logger, env }) {
+export async function handleInviteAccepted({ keys, payload }, { services, database, getSchema, logger, env }, pendingAccepts) {
   if (payload?.status !== 'accepted') return;
 
-  const verified = payload._verified;
+  const invitationKey = keys?.[0] != null ? String(keys[0]) : null;
+  if (!invitationKey) return;
+
+  const verified = pendingAccepts.get(invitationKey);
+  pendingAccepts.delete(invitationKey);
   if (!verified) return;
 
   const schema = await getSchema();
