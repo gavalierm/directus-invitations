@@ -1,12 +1,26 @@
 {
   "name": "directus-hook-invitation-handler",
-  "version": "1.0.0",
-  "description": "Invitation system — invite, activate, cancel, expiry",
+  "version": "2.0.0",
+  "description": "Invitation system — invite, accept, cancel, expiry. Bundle: hook (create/delete/cron) + endpoint (accept).",
   "type": "module",
   "directus:extension": {
-    "type": "hook",
-    "path": "dist/index.js",
-    "source": "src/index.js",
+    "type": "bundle",
+    "path": {
+      "app": "dist/app.js",
+      "api": "dist/api.js"
+    },
+    "entries": [
+      {
+        "type": "hook",
+        "name": "invitations-hook",
+        "source": "src/hook/index.js"
+      },
+      {
+        "type": "endpoint",
+        "name": "invitations-accept",
+        "source": "src/endpoint/index.js"
+      }
+    ],
     "host": "^11.0.0"
   },
   "dependencies": {

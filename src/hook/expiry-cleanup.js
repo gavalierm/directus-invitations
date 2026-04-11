@@ -1,6 +1,6 @@
 import {
   INVITE_TTL_DAYS, sendBatchNotification, cleanupOrphanedUsers,
-} from './helpers.js';
+} from '../shared/helpers.js';
 
 export async function handleExpiryCleanup({ services, database, getSchema, logger }) {
   const cutoff = new Date(Date.now() - INVITE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();

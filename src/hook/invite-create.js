@@ -2,7 +2,7 @@ import {
   roleSk, getAppUrl, getDefaultRole, createInviteToken,
   getBandTitle, getInviterName, getUserByEmail, getOwnerEmails,
   isDuplicate, buildEmailHtml,
-} from './helpers.js';
+} from '../shared/helpers.js';
 
 export async function handleInviteCreate({ key, payload }, { services, database, getSchema, logger, env }) {
   const schema = await getSchema();

@@ -87,24 +87,33 @@ export async function getOwnerEmails(database, bandId) {
 }
 
 // ── Access upsert ──
+// Uses ItemsService so Directus generates the uuid for `id` (raw knex insert
+// trips a NOT NULL violation — `access.id` is Directus-managed, no DB default).
 
-export async function upsertAccess(database, roleType, userId, bandId) {
+export async function upsertAccess(services, schema, roleType, userId, bandId) {
   const field = ACCESS_FIELD[roleType];
   const value = ACCESS_VALUE[roleType];
   if (!field || !value) throw new Error(`Unknown role_type: ${roleType}`);
 
-  const [existing] = await database('access')
-    .where({ user: userId, band: bandId })
-    .select('id', field)
-    .limit(1);
+  const accessService = new services.ItemsService('access', {
+    schema,
+    accountability: { admin: true },
+  });
 
-  if (existing) {
-    if (existing[field] === value) return false;
-    await database('access').where('id', existing.id).update({ [field]: value });
+  const existing = await accessService.readByQuery({
+    filter: { user: { _eq: userId }, band: { _eq: bandId } },
+    fields: ['id', field],
+    limit: 1,
+  });
+
+  const row = existing?.[0];
+  if (row) {
+    if (row[field] === value) return false;
+    await accessService.updateOne(row.id, { [field]: value });
     return true;
   }
 
-  await database('access').insert({ user: userId, band: bandId, [field]: value });
+  await accessService.createOne({ user: userId, band: bandId, [field]: value });
   return true;
 }
 

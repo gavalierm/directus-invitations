@@ -1,8 +1,7 @@
 import { handleInviteCreate } from './invite-create.js';
-import { filterInviteUpdate, handleInviteAccepted } from './invite-accept.js';
 import { preDeleteCapture, postDeleteProcess } from './invite-delete.js';
 import { handleExpiryCleanup } from './expiry-cleanup.js';
-import { notifyAdmins } from './notify-admin.js';
+import { notifyAdmins } from '../shared/notify-admin.js';
 
 export default ({ action, filter, schedule }, context) => {
   const { services, database, getSchema, logger, env } = context;
@@ -10,7 +9,6 @@ export default ({ action, filter, schedule }, context) => {
   const ctx = { services, database, getSchema, logger, env };
 
   const _pendingDeletes = new Map();
-  const _pendingAccepts = new Map();
 
   // ── CREATE ──
 
@@ -26,25 +24,11 @@ export default ({ action, filter, schedule }, context) => {
     }
   });
 
-  // ── UPDATE (accept) ──
-
-  filter('invitations.items.update', async (payload, meta) => {
-    return filterInviteUpdate(payload, meta, ctx, _pendingAccepts);
-  });
-
-  action('invitations.items.update', async (meta) => {
-    try {
-      await handleInviteAccepted(meta, ctx, _pendingAccepts);
-    } catch (err) {
-      await notifyAdmins(ctx, 'invitations:accept', err, {
-        keys: meta.keys,
-        collection: meta.collection,
-        payload: meta.payload,
-      });
-    }
-  });
-
   // ── DELETE ──
+  // Note: accept flow is handled by the /invitations-accept endpoint (see
+  // src/endpoint/accept-handler.js). No filter/action hooks on items.update —
+  // any PATCH on invitations collection outside of admin accountability is
+  // blocked by Directus permissions.
 
   filter('invitations.items.delete', async (keys) => {
     try {

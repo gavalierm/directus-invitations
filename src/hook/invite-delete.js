@@ -1,4 +1,4 @@
-import { sendBatchNotification, cleanupOrphanedUsers } from './helpers.js';
+import { sendBatchNotification, cleanupOrphanedUsers } from '../shared/helpers.js';
 
 export async function preDeleteCapture(keys, { database, logger }) {
   try {
