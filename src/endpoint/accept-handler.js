@@ -11,7 +11,7 @@ import { BusinessError } from '../shared/errors.js';
 
 const MIN_PASSWORD_LENGTH = 8;
 
-export async function handleAccept(body, { services, database, getSchema, env, logger }) {
+export async function handleAccept(body, { services, database, getSchema, env, logger }, _notifyAdmins) {
   const invitationId = body?.invitation_id;
   const token = body?.token;
 
@@ -80,6 +80,33 @@ export async function handleAccept(body, { services, database, getSchema, env, l
   if (lastName) userUpdates.last_name = lastName;
   if (Object.keys(userUpdates).length) {
     await usersService.updateOne(user.id, userUpdates);
+  }
+
+  // Verify password was actually persisted — UsersService.updateOne() can
+  // silently drop the password (e.g. if argon2 hashing fails internally).
+  // This is a critical integrity check: an active user without a password
+  // is locked out permanently.
+  if (wasInvited) {
+    const [check] = await database('directus_users')
+      .where('id', user.id)
+      .select('password')
+      .limit(1);
+    if (!check?.password) {
+      const err = new Error(
+        `Password not persisted for user ${user.id} (${invitation.email}) after UsersService.updateOne(). ` +
+        `User is now status=active with no password — manual intervention required.`,
+      );
+      err.adminsNotified = true;
+      if (_notifyAdmins) {
+        await _notifyAdmins('invitations:accept-password-lost', err, {
+          user_id: user.id,
+          email: invitation.email,
+          invitation_id: invitation.id,
+          band: invitation.band,
+        });
+      }
+      throw err;
+    }
   }
 
   const invitationsService = new services.ItemsService('invitations', {

@@ -9,7 +9,8 @@ export default {
 
     router.post('/', async (req, res) => {
       try {
-        const result = await handleAccept(req.body || {}, ctx);
+        const notify = (source, err, context) => notifyAdmins(ctx, source, err, context);
+        const result = await handleAccept(req.body || {}, ctx, notify);
         res.status(200).json({ data: result });
       } catch (err) {
         if (err?.isBusinessError) {
@@ -18,11 +19,13 @@ export default {
           });
           return;
         }
-        await notifyAdmins(ctx, 'invitations:accept-endpoint', err, {
-          body: req.body,
-          ip: req.ip,
-          ua: req.headers?.['user-agent'],
-        });
+        if (!err.adminsNotified) {
+          await notifyAdmins(ctx, 'invitations:accept-endpoint', err, {
+            body: req.body,
+            ip: req.ip,
+            ua: req.headers?.['user-agent'],
+          });
+        }
         res.status(500).json({
           errors: [{
             message: 'An unexpected error occurred.',
