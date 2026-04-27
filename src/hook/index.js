@@ -12,6 +12,13 @@ export default ({ action, filter, schedule }, context) => {
 
   // ── CREATE ──
 
+  filter('invitations.items.create', (payload) => {
+    if (payload && typeof payload.email === 'string') {
+      payload.email = payload.email.trim().toLowerCase();
+    }
+    return payload;
+  });
+
   action('invitations.items.create', async (meta) => {
     try {
       await handleInviteCreate(meta, ctx);
