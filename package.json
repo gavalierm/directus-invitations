@@ -1,6 +1,6 @@
 {
   "name": "directus-hook-invitation-handler",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Invitation system — invite, accept, cancel, expiry. Bundle: hook (create/delete/cron) + endpoint (accept).",
   "type": "module",
   "directus:extension": {
@@ -27,7 +27,7 @@
     "jsonwebtoken": "^9.0.0"
   },
   "devDependencies": {
-    "@directus/extensions-sdk": "^12.0.0"
+    "@directus/extensions-sdk": "^17.1.0"
   },
   "scripts": {
     "prebuild": "node scripts/check-hooks-installed.js",
